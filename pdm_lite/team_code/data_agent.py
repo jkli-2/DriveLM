@@ -33,15 +33,15 @@ from agents.navigation.local_planner import LocalPlanner
 # from: https://medium.com/codex/rgb-to-color-names-in-python-the-robust-way-ec4a9d97a01f
 from scipy.spatial import KDTree
 from webcolors import (
-    CSS2_HEX_TO_NAMES,
     hex_to_rgb,
+    name_to_hex,
+    names,
 )
 
 
 def convert_rgb_to_names(rgb_tuple):
-
     # a dictionary of all the hex and their respective names in css3
-    css3_db = CSS2_HEX_TO_NAMES
+    css3_db = {name_to_hex(name): name for name in names(spec="CSS3")}
     names = []
     rgb_values = []
     for color_hex, color_name in css3_db.items():
@@ -89,6 +89,9 @@ class DataAgent(AutoPilot):
         self._active_traffic_light = None
         self.last_lidar = None
         self.last_ego_transform = None
+
+        self.simulate_drowsiness = getattr(self.config, "simulate_drowsiness", False)
+        self.drowsiness_prob = getattr(self.config, "drowsiness_prob", 0.2)  # 20% chance of occlusion per frame
 
     def _init(self, hd_map):
         super()._init(hd_map)
@@ -245,8 +248,28 @@ class DataAgent(AutoPilot):
 
         return result
 
+    def _occlude_sensors(self, input_data):
+        if "rgb" in input_data:
+            input_data["rgb"] = (input_data["rgb"][0], np.zeros_like(input_data["rgb"][1]))
+        if "rgb_augmented" in input_data:
+            input_data["rgb_augmented"] = (input_data["rgb_augmented"][0], np.zeros_like(input_data["rgb_augmented"][1]))
+        if "depth" in input_data:
+            input_data["depth"] = (input_data["depth"][0], np.zeros_like(input_data["depth"][1]))
+        if "depth_augmented" in input_data:
+            input_data["depth_augmented"] = (input_data["depth_augmented"][0], np.zeros_like(input_data["depth_augmented"][1]))
+        if "semantics" in input_data:
+            input_data["semantics"] = (input_data["semantics"][0], np.zeros_like(input_data["semantics"][1]))
+        if "semantics_augmented" in input_data:
+            input_data["semantics_augmented"] = (input_data["semantics_augmented"][0], np.zeros_like(input_data["semantics_augmented"][1]))
+        if "lidar" in input_data:
+            input_data["lidar"] = np.zeros_like(input_data["lidar"])
+
     def tick(self, input_data):
         result = {}
+
+        # Randomly blank out sensors to simulate drowsy state
+        if self.simulate_drowsiness and random.random() < self.drowsiness_prob:
+            self._occlude_sensors(input_data)
 
         if self.save_path is not None and (self.datagen or self.tmp_visu):
             rgb = input_data["rgb"][1][:, :, :3]
