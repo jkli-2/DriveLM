@@ -18,8 +18,8 @@ term() {
 trap term SIGINT
 
 # carla
-export CARLA_ROOT=/ext/Carla
-export WORK_DIR=/ext/DriveLM/pdm_lite
+export CARLA_ROOT=/home/ste/Documents/carla
+export WORK_DIR=/home/ste/Documents/DriveLM/pdm_lite
 export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI
 export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI/carla
 export SCENARIO_RUNNER_ROOT=${WORK_DIR}/scenario_runner

@@ -41,15 +41,9 @@ dependencies = [
 [tool.poetry]
 package-mode = false
 
-[[tool.poetry.source]]
-name = "pytorch_cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
-
 [tool.poetry.dependencies]
-torch = {source = "pytorch_cpu"}
-torchvision = {source = "pytorch_cpu"}
-torchaudio = {source = "pytorch_cpu"}
+scenario_runner = { path = "./scenario_runner", develop = true }
+leaderboard = { path = "./leaderboard", develop = true }
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
