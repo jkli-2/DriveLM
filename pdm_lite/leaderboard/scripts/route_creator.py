@@ -37,7 +37,31 @@ def draw_keypoint(world, location):
     string = "(" + str(round(location.x, 1)) + ", " + str(round(location.y, 1)) + ", " + str(round(location.z, 1)) + ")"
     world.debug.draw_string(location + carla.Location(z=0.5), string, True, color=carla.Color(0, 0 , 128), life_time=LIFE_TIME)
 
-def get_saved_data(filename, route_id, client, grp):
+def load_route_world(filename, route_id, client):
+    tree = etree.parse(filename)
+    root = tree.getroot()
+
+    found_id = False
+
+    for route in root.iter("route"):
+        if route.attrib['id'] != route_id:
+            continue
+
+        found_id = True
+
+        town = route.attrib.get('town', 'Town01')  # Town01 as fallback
+        world = client.get_world()
+        current_map = world.get_map().name
+        if not current_map.endswith(town):
+            print(f"Changing map from {current_map} to {town}")
+            world = client.load_world(town)
+
+    if not found_id:
+        print(f"\033[91mCouldn't find the id '{route_id}' in the given routes file\033[0m")
+    
+    return world
+
+def get_saved_data(filename, route_id, world, grp):
     def convert_elem_to_location(elem):
         """Convert an ElementTree.Element to a CARLA Location"""
         return carla.Location(float(elem.attrib.get('x')), float(elem.attrib.get('y')), float(elem.attrib.get('z')))
@@ -55,13 +79,6 @@ def get_saved_data(filename, route_id, client, grp):
             continue
 
         found_id = True
-
-        town = route.attrib.get('town', 'Town01')  # Town01 as fallback
-        world = client.get_world()
-        current_map = world.get_map().name
-        if not current_map.endswith(town):
-            print(f"Changing map from {current_map} to {town}")
-            world = client.load_world(town)
 
         for position in route.find('waypoints').iter('position'):
             points.append(convert_elem_to_location(position))
@@ -83,8 +100,7 @@ def get_saved_data(filename, route_id, client, grp):
     if not found_id:
         print(f"\033[91mCouldn't find the id '{route_id}' in the given routes file\033[0m")
 
-
-    return points, distance, world
+    return points, distance
 
 def add_data(points, tmap, world, spectator, grp):
     waypoint = tmap.get_waypoint(spectator.get_location())
@@ -167,22 +183,23 @@ def main():
     argparser.add_argument('-f', '--file', required=True, nargs="+", help='File at which to place the scenarios')
     args = argparser.parse_args()
 
+    file_path = args.file[0]
+    route_id = args.file[1] if len(args.file) > 1 else 0
+
     # Get the client
     client = carla.Client(args.host, args.port)
     client.set_timeout(10.0)
 
     # # Get the rest
-    world = client.get_world()
+    world = load_route_world(file_path, route_id, client)
     spectator = world.get_spectator()
     tmap = world.get_map()
     grp = GlobalRoutePlanner(tmap, 2.0)
     points = []
 
-    file_path = args.file[0]
-    route_id = args.file[1] if len(args.file) > 1 else 0
 
     # Get the data already at the file
-    points, distance, world = get_saved_data(file_path, route_id, client, grp)
+    points, distance = get_saved_data(file_path, route_id, world, grp)
 
     print(" ------------------------------------------------------------ ")
     print(" |               Use Ctrl+C to stop the script              | ")
