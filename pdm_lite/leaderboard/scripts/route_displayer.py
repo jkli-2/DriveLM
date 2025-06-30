@@ -163,6 +163,29 @@ def show_saved_scenarios(route, world):
         world.debug.draw_point(trigger_location + carla.Location(z=0.2), size=0.1, color=carla.Color(125, 0, 0))
         world.debug.draw_string(trigger_location + carla.Location(z=0.5), name, True, color=carla.Color(0, 0 , 125), life_time=LIFE_TIME)
 
+def load_route_world(filename, route_id, client):
+    tree = etree.parse(filename)
+    root = tree.getroot()
+
+    found_id = False
+
+    for route in root.iter("route"):
+        if route.attrib['id'] != route_id:
+            continue
+
+        found_id = True
+
+        town = route.attrib.get('town', 'Town01')  # Town01 as fallback
+        world = client.get_world()
+        current_map = world.get_map().name
+        if not current_map.endswith(town):
+            print(f"Changing map from {current_map} to {town}")
+            world = client.load_world(town)
+
+    if not found_id:
+        print(f"\033[91mCouldn't find the id '{route_id}' in the given routes file\033[0m")
+    
+    return world
 
 def main():
     argparser = argparse.ArgumentParser(description=__doc__)
@@ -180,7 +203,9 @@ def main():
     client.set_timeout(10.0)
 
     # Get the rest
-    world = client.get_world()
+    file_path = args.file
+    world = load_route_world(file_path, '0', client)
+    spectator = world.get_spectator()
     tmap = world.get_map()
     grp = GlobalRoutePlanner(tmap, 2.0)
 

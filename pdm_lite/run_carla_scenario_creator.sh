@@ -28,9 +28,9 @@ export PYTHONPATH="${CARLA_ROOT}/PythonAPI/carla/":"${SCENARIO_RUNNER_ROOT}":"${
 
 export CARLA_SERVER=${CARLA_ROOT}/CarlaUE4.sh
 export REPETITIONS=1
-export DEBUG_CHALLENGE=1
+export DEBUG_CHALLENGE=0
 
-export PTH_ROUTE=${WORK_DIR}/leaderboard/data/routes_new1
+export PTH_ROUTE=${WORK_DIR}/leaderboard/data/routes_devtest
 
 # Function to handle errors
 handle_error() {
@@ -43,31 +43,15 @@ trap 'handle_error' ERR
 
 # Start the carla server
 export PORT=$((RANDOM % (40000 - 2000 + 1) + 2000)) # use a random port
-# Remove -RenderOffScreen to activate rendering
-# sh ${CARLA_SERVER} -carla-streaming-port=0 -carla-rpc-port=${PORT} -RenderOffScreen &
 sh ${CARLA_SERVER} -carla-streaming-port=0 -carla-rpc-port=${PORT} &
 sleep 20 # on a fast computer this can be reduced (e.g., to 6 seconds)
 
 echo 'Port' $PORT
 
-# export TEAM_AGENT=${WORK_DIR}/team_code/autopilot.py # change this to data_agent.py for data generation
-export TEAM_AGENT=${WORK_DIR}/team_code/data_agent.py # change this to data_agent.py for data generation
-export CHALLENGE_TRACK_CODENAME=MAP
 export ROUTES=${PTH_ROUTE}.xml
-export TM_PORT=$((PORT + 3))
-
-export CHECKPOINT_ENDPOINT=${PTH_ROUTE}.json
-export TEAM_CONFIG=${PTH_ROUTE}.xml
-export PTH_LOG='logs'
-export RESUME=0
-# export DATAGEN=0 # Switch this flag to 1 for data generation
-export DATAGEN=1 # Switch this flag to 1 for data generation
-export SAVE_PATH='logs'
-export TM_SEED=0
-export REPETITION=0
-
-# Start the actual evaluation / data generation
-poetry run python leaderboard/leaderboard/leaderboard_evaluator_local.py --port=${PORT} --traffic-manager-port=${TM_PORT} --routes=${ROUTES} --repetitions=${REPETITIONS} --track=${CHALLENGE_TRACK_CODENAME} --checkpoint=${CHECKPOINT_ENDPOINT} --agent=${TEAM_AGENT} --agent-config=${TEAM_CONFIG} --debug=${DEBUG_CHALLENGE} --resume=${RESUME} --timeout=2000 --traffic-manager-seed=${TM_SEED}
+export SCRIPT="/home/ste/Documents/DriveLM/pdm_lite/leaderboard/scripts/scenario_creator.py"
+export ROUTE_ID=0
+poetry run python ${SCRIPT} --host='localhost' --port=${PORT} --f ${ROUTES} ${ROUTE_ID}
 
 # Kill the Carla server afterwards
 pkill Carla

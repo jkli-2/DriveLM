@@ -420,6 +420,30 @@ def prettify_and_save_tree(filename, tree):
     with open(filename, 'w') as f:
         f.write(new_data)
 
+def load_route_world(filename, route_id, client):
+    tree = etree.parse(filename)
+    root = tree.getroot()
+
+    found_id = False
+
+    for route in root.iter("route"):
+        if route.attrib['id'] != route_id:
+            continue
+
+        found_id = True
+
+        town = route.attrib.get('town', 'Town01')  # Town01 as fallback
+        world = client.get_world()
+        current_map = world.get_map().name
+        if not current_map.endswith(town):
+            print(f"Changing map from {current_map} to {town}")
+            world = client.load_world(town)
+
+    if not found_id:
+        print(f"\033[91mCouldn't find the id '{route_id}' in the given routes file\033[0m")
+    
+    return world
+
 def main():
     argparser = argparse.ArgumentParser(description=__doc__)
     argparser.add_argument('--host', metavar='H', default='localhost', help='IP of the host CARLA Simulator (default: localhost)')
@@ -428,17 +452,17 @@ def main():
     argparser.add_argument('-s', '--show-only', action='store_true', help='Only shows the route')
     args = argparser.parse_args()
 
-    # Get the client
-    client = carla.Client(args.host, args.port)
-    client.set_timeout(10.0)
-
-    # # Get the rest
-    world = client.get_world()
-    spectator = world.get_spectator()
-    tmap = world.get_map()
-
     file_path = args.file[0]
     route_id = args.file[1] if len(args.file) > 1 else 0
+
+    # Get the client
+    client = carla.Client(args.host, args.port)
+    client.set_timeout(20.0)
+
+    # # Get the rest
+    world = load_route_world(file_path, route_id, client)
+    spectator = world.get_spectator()
+    tmap = world.get_map()
 
     # Get the data already at the file
     show_saved_scenarios(file_path, route_id, world)

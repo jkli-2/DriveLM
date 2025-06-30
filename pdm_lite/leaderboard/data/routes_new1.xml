@@ -1,0 +1,31 @@
+<routes>
+   <route id="0" town="Town05">
+      <weather
+            cloudiness="0" precipitation="0" precipitation_deposits="0"
+            wind_intensity="0" sun_azimuth_angle="0" sun_altitude_angle="90" fog_density="0" fog_distance="0" wetness="0" fog_falloff="0"
+            mie_scattering_scale="0" rayleigh_scattering_scale="0"/>
+      <waypoints>
+         <position x="-4.0" y="6.1" z="0.0"/>
+         <position x="13.5" y="6.0" z="0.0"/>
+         <position x="24.6" y="14.8" z="0.0"/>
+         <position x="28.1" y="71.5" z="0.0"/>
+         <position x="45.4" y="92.0" z="0.0"/>
+         <position x="60.9" y="95.2" z="0.0"/>
+      </waypoints>
+      <scenarios>
+         <scenario name="DynamicObjectCrossing_1" type="DynamicObjectCrossing">
+            <trigger_point x="24.6" y="14.8" z="0.0" yaw="179.9"/>
+            <distance value="10"/>
+            <direction value="15"/>
+            <blocker_model value="static.prop.container"/>
+            <crossing_angle value="15"/>
+         </scenario>
+         <scenario name="PedestrianCrossing_2" type="PedestrianCrossing">
+            <trigger_point x="28.1" y="71.5" z="0.0" yaw="90.0"/>
+         </scenario>
+         <scenario name="PedestrianCrossing_2" type="PedestrianCrossing">
+            <trigger_point x="45.4" y="92.0" z="0.0" yaw="-270.0"/>
+         </scenario>
+      </scenarios>
+   </route>
+</routes>
