@@ -101,6 +101,11 @@ class LeaderboardEvaluator(object):
         signal.signal(signal.SIGINT, self._signal_handler)
 
         self._client_timed_out = False
+    
+    def _turn_off_traffic(self, traffic_manager):
+        traffic_manager.set_synchronous_mode(False)
+        traffic_manager.set_global_distance_to_leading_vehicle(1e6)
+        traffic_manager.set_respawn_dormant_vehicles(False)
 
     def _signal_handler(self, signum, frame):
         """
@@ -199,6 +204,8 @@ class LeaderboardEvaluator(object):
         traffic_manager.set_synchronous_mode(True)
         traffic_manager.set_hybrid_physics_mode(True)
 
+        self._turn_off_traffic(traffic_manager)
+
         return client, client_timeout, traffic_manager, traffic_manager_port
 
     def _reset_world_settings(self):
@@ -219,6 +226,8 @@ class LeaderboardEvaluator(object):
             # Make the TM back to async
             self.traffic_manager.set_synchronous_mode(False)
             self.traffic_manager.set_hybrid_physics_mode(False)
+
+        self._turn_off_traffic(self.traffic_manager)
 
     def _load_and_wait_for_world(self, args, town):
         """
@@ -247,6 +256,7 @@ class LeaderboardEvaluator(object):
 
         # Wait for the world to be ready
         self.world.tick()
+        self._turn_off_traffic(self.traffic_manager)
 
         map_name = CarlaDataProvider.get_map().name.split("/")[-1]
         if map_name != town:
