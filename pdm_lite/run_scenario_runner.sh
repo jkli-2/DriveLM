@@ -27,10 +27,8 @@ export LEADERBOARD_ROOT=${WORK_DIR}/leaderboard
 export PYTHONPATH="${CARLA_ROOT}/PythonAPI/carla/":"${SCENARIO_RUNNER_ROOT}":"${LEADERBOARD_ROOT}":${PYTHONPATH}
 
 export CARLA_SERVER=${CARLA_ROOT}/CarlaUE4.sh
-export REPETITIONS=1
-export DEBUG_CHALLENGE=0
 
-export PTH_ROUTE=${WORK_DIR}/leaderboard/data/routes_custom1
+export SCENARIO_NAME="custom_1_1"
 
 # Function to handle errors
 handle_error() {
@@ -43,15 +41,14 @@ trap 'handle_error' ERR
 
 # Start the carla server
 export PORT=$((RANDOM % (40000 - 2000 + 1) + 2000)) # use a random port
-sh ${CARLA_SERVER} -carla-streaming-port=0 -carla-rpc-port=${PORT} &
+# sh ${CARLA_SERVER} -carla-streaming-port=0 -carla-rpc-port=${PORT} &
+sh ${CARLA_SERVER} &
 sleep 10 # on a fast computer this can be reduced (e.g., to 6 seconds)
 
 echo 'Port' $PORT
 
-export ROUTES=${PTH_ROUTE}.xml
-export SCRIPT="/home/ste/Documents/DriveLM/pdm_lite/leaderboard/scripts/route_creator.py"
-export ROUTE_ID=0
-poetry run python ${SCRIPT} --host='localhost' --port=${PORT} --f ${ROUTES} ${ROUTE_ID}
+export SCRIPT="/home/ste/Documents/DriveLM/pdm_lite/scenario_runner/scenario_runner.py"
+poetry run python ${SCRIPT} --scenario ${SCENARIO_NAME} --reloadWorld
 
 # Kill the Carla server afterwards
 pkill Carla

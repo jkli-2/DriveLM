@@ -30,7 +30,7 @@ export CARLA_SERVER=${CARLA_ROOT}/CarlaUE4.sh
 export REPETITIONS=1
 export DEBUG_CHALLENGE=0
 
-export PTH_ROUTE=${WORK_DIR}/leaderboard/data/routes_devtest
+export PTH_ROUTE=${WORK_DIR}/leaderboard/data/routes_new1
 
 # Function to handle errors
 handle_error() {
