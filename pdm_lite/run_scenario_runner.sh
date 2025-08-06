@@ -47,7 +47,7 @@ sleep 10 # on a fast computer this can be reduced (e.g., to 6 seconds)
 
 echo 'Port' $PORT
 
-export SCRIPT="/home/ste/Documents/DriveLM/pdm_lite/scenario_runner/scenario_runner.py"
+export SCRIPT="${WORK_DIR}/scenario_runner/scenario_runner.py"
 poetry run python ${SCRIPT} --scenario ${SCENARIO_NAME} --reloadWorld
 
 # Kill the Carla server afterwards

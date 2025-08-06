@@ -49,7 +49,7 @@ sleep 20 # on a fast computer this can be reduced (e.g., to 6 seconds)
 echo 'Port' $PORT
 
 export ROUTES=${PTH_ROUTE}.xml
-export SCRIPT="/home/ste/Documents/DriveLM/pdm_lite/leaderboard/scripts/scenario_creator.py"
+export SCRIPT="${WORK_DIR}/leaderboard/scripts/scenario_creator.py"
 export ROUTE_ID=0
 poetry run python ${SCRIPT} --host='localhost' --port=${PORT} --f ${ROUTES} ${ROUTE_ID}
 
