@@ -27,6 +27,13 @@ from longitudinal_controller import LongitudinalLinearRegressionController
 from kinematic_bicycle_model import KinematicBicycleModel
 
 
+from dataclasses import is_dataclass
+
+def _actors_from(scenario_data, scenario_type=None):
+    if is_dataclass(scenario_data) and hasattr(scenario_data, "a1"):
+        return scenario_data.a1, scenario_data.a2
+    return scenario_data[0], scenario_data[1]
+
 def get_entry_point():
     return "AutoPilot"
 
@@ -66,6 +73,11 @@ class AutoPilot(autonomous_agent_local.AutonomousAgent):
         self.tp_sign_agrees_with_angle = []
         if int(os.environ.get("TP_STATS", 0)):
             self.tp_stats = True
+
+        # Debug toggles
+        self.debug_chainreact = True # set False to silence prints
+        self.debug_chainreact_every = 5 # print every N ticks to reduce spam
+        self._tick_counter = 0
 
         # Dynamics models
         self.ego_model = KinematicBicycleModel(self.config)
@@ -108,6 +120,9 @@ class AutoPilot(autonomous_agent_local.AutonomousAgent):
         self.angle = 0.0
         self.stop_sign_hazard = False
         self.traffic_light_hazard = False
+        self.vehicle_affecting_id = None
+        self.walker_affecting_id = None
+        self.walker_close_id = None
         self.walker_hazard = False
         self.vehicle_hazard = False
         self.junction = False
@@ -728,6 +743,14 @@ class AutoPilot(autonomous_agent_local.AutonomousAgent):
                 CarlaDataProvider.active_scenarios[i] for i in indices
             ]
 
+        def CRDBG(*args):
+            if getattr(self, "debug_chainreact", False) and (self._tick_counter % max(1, getattr(self, "debug_chainreact_every", 1)) == 0):
+                try:
+                    print("[AP][ChainReactionOvertake]", *args, flush=True)
+                except Exception:
+                    pass
+
+        self._tick_counter = getattr(self, "_tick_counter", 0) + 1
         keep_driving = False
         speed_reduced_by_obj = [
             target_speed,
@@ -1010,6 +1033,430 @@ class AutoPilot(autonomous_agent_local.AutonomousAgent):
                         self.config.default_overtake_speed,
                         True,
                     )
+
+            elif scenario_type == "ChainReactionOvertake":
+                # scenario_data is a dataclass carrying a1 (lead), a2 (middle) and simple phase/flags
+                # scenario_data layout for ChainReactionOvertake (length = 11)
+                SD_A1                 = 0  # actor: lead (frontmost)
+                SD_A2                 = 1  # actor: middle (between ego and A1)
+                SD_CHANGED            = 2  # bool
+                SD_FROM_IDX           = 3  # int
+                SD_TO_IDX             = 4  # int
+                SD_PATH_CLEAR         = 5  # bool
+                SD_SHIFT_LEFT         = 6  # bool (True = left, False = right)
+                SD_A1_LANE0           = 7  # (road_id, lane_id) or None
+                SD_A2_LANE0           = 8  # (road_id, lane_id) or None
+                SD_RESERVED_0         = 9  # reserved for future use
+                SD_RESERVED_1         = 10 # reserved for future use
+
+                PASS_BUFFER_M          = 12.0
+                PROACTIVE_MARGIN_M     = 25.0      # keep extra room ahead of route_index
+                EXTEND_CHUNK_M         = 40.0
+                OVERLAP_BACK_M         = 4.0
+                LANE_HALF_WIDTH_M   = 1.9
+                PASS_MIN_GAP_M      = 8.0
+                PASS_TTC_S          = 2.0   # gentle but safe
+
+                SETTLE_TICKS            = 20           # ~0.5s if your tick ~25-40 Hz
+                MIN_DIST_TO_A2_BEFORE_SHIFT = 12.0     # must be tucked behind A2 before shifting
+                REQUIRE_A2_AS_LEADER    = True         # leader ahead in ego lane must be A2
+                INDEX_FENCE_M           = 8.0          # optional: push LC window a bit past trigger
+
+                # scenario_data slots (already defined above)
+                SD_ARMED_TICK = SD_RESERVED_0  # reuse reserved slot for our "armed" tick
+
+                # points-per-meter shorthands (avoid recomputing)
+                ppm = float(self.config.points_per_meter)
+                transition_length = int(self.config.transition_smoothness_distance)
+
+                CRDBG("data", scenario_data)
+
+                # Basic State
+                a1, a2 = scenario_data[:2]
+                ego_tf = self._vehicle.get_transform()
+                ego_location = ego_tf.location
+                ego_speed = max(0.0, self._vehicle.get_velocity().length())
+                if scenario_data[SD_ARMED_TICK] is None:
+                    scenario_data[SD_ARMED_TICK] = -1
+
+                # Cache baseline lanes once
+                a1_wp = self.world_map.get_waypoint(a1.get_location())
+                a2_wp = self.world_map.get_waypoint(a2.get_location())
+                if scenario_data[SD_A1_LANE0] is None:
+                    scenario_data[SD_A1_LANE0] = (a1_wp.road_id, a1_wp.lane_id)
+                if scenario_data[SD_A2_LANE0] is None:
+                    scenario_data[SD_A2_LANE0] = (a2_wp.road_id, a2_wp.lane_id)
+
+                # Distance gates
+                horizontal_distance_a1 = get_horizontal_distance(self._vehicle, a1)
+                horizontal_distance_a2 = get_horizontal_distance(self._vehicle, a2)
+                dist_gate_a1 = min(40.0, float(self.config.default_max_distance_to_process_scenario))
+                dist_gate_a2 = min(20.0, float(self.config.default_max_distance_to_process_scenario))
+
+                # Only engage when close enough
+                if horizontal_distance_a1 > dist_gate_a1:
+                    CRDBG("skip: too far from A1", dict(h=round(horizontal_distance_a1,1), gate=dist_gate_a1))
+                    return target_speed, keep_driving, speed_reduced_by_obj
+
+                # Route context
+                route_idx = int(self._waypoint_planner.route_index)
+                max_idx   = int(self._waypoint_planner.route_points.shape[0] - 1)
+                # Waypoint at current index (fallback to ego_wp if route_waypoints not available)
+                ego_wp  = self.world_map.get_waypoint(ego_location)
+                if hasattr(self._waypoint_planner, "route_waypoints") and len(self._waypoint_planner.route_waypoints) > route_idx:
+                    cur_wp = self._waypoint_planner.route_waypoints[route_idx]
+                else:
+                    cur_wp = ego_wp
+
+                # Adjacent lanes & direction to shift
+                left_wp  = cur_wp.get_left_lane()
+                right_wp = cur_wp.get_right_lane()
+                shift_to_left_lane = (left_wp is not None) or (right_wp is None)
+                target_lane_wp = left_wp if shift_to_left_lane else right_wp
+                if target_lane_wp is None:
+                    CRDBG("no adjacent lane; continue follow")
+                    # follow conservatively if we haven't shifted, otherwise keep current target_speed
+                    if not scenario_data[SD_CHANGED]:
+                        a2_speed = max(0.1, a2.get_velocity().length())
+                        dist_to_a2 = max(0.1, ego_location.distance(a2.get_location()))
+                        target_speed_follow_a2 = self._compute_target_speed_idm(
+                            desired_speed=target_speed,
+                            leading_actor_length=a2.bounding_box.extent.x * 2.0,
+                            ego_speed=ego_speed,
+                            leading_actor_speed=a2_speed,
+                            distance_to_leading_actor=dist_to_a2,
+                            s0=self.config.idm_leading_vehicle_minimum_distance,
+                            T=self.config.idm_leading_vehicle_time_headway,
+                        )
+                        if speed_reduced_by_obj is None or speed_reduced_by_obj[0] > target_speed_follow_a2:
+                            speed_reduced_by_obj = [target_speed_follow_a2, a2.type_id, a2.id, dist_to_a2]
+                        return min(target_speed, target_speed_follow_a2), keep_driving, speed_reduced_by_obj
+                    else:
+                        return min(target_speed, self.config.default_overtake_speed), True, speed_reduced_by_obj
+
+                def leader_ahead_in_lane(ref_wp, ego_loc, ego_forward, vehicles, lane_half_w=1.9):
+                    best = None
+                    best_d = 1e9
+                    prev_ids = get_previous_road_lane_ids(ref_wp) if ref_wp else set()
+                    for v in vehicles:
+                        if v.id == self._vehicle.id:
+                            continue
+                        loc = v.get_location()
+                        rel = loc - ego_loc
+                        # ahead?
+                        dot = ego_forward.x * rel.x + ego_forward.y * rel.y + ego_forward.z * rel.z
+                        if dot <= 0.0:
+                            continue
+                        # approx lateral filter
+                        lat = abs(ego_forward.cross(rel).length()) / max(1e-3, ego_forward.length())
+                        if lat > (lane_half_w * 2.0):
+                            continue
+                        v_wp = self.world_map.get_waypoint(loc)
+                        if v_wp and (v_wp.road_id, v_wp.lane_id) not in prev_ids:
+                            continue
+                        d = ego_loc.distance(loc)
+                        if d < best_d:
+                            best_d = d
+                            best = v
+                    return best, best_d
+
+                ego_forward = ego_tf.get_forward_vector()
+                ego_lane_leader, ego_lane_ldist = leader_ahead_in_lane(cur_wp, ego_location, ego_forward, list_vehicles)
+
+                # Arm the "settle window" at the first moment gates become true, but before shift starts.
+                gates_now_true = False  # we’ll compute below, then latch
+
+                # Event gate 1: A1 slowing (vs local speed limit)
+                speed_limit_here = 10.0
+                if len(self._waypoint_planner.speed_limits) > route_idx:
+                    speed_limit_here = max(1.0, float(self._waypoint_planner.speed_limits[route_idx]))
+                a1_slowing = (a1.get_velocity().length() < 0.55 * speed_limit_here)   # hysteresis 0.55
+
+                # Event gate 2: A2 left its original lane?
+                a2_left_lane = ((a2_wp.road_id, a2_wp.lane_id) != scenario_data[SD_A2_LANE0])
+
+                # Conservative pre-pass following calculation (only used if not yet shifted)
+                a2_speed = max(0.1, a2.get_velocity().length())
+                dist_to_a2 = max(0.1, ego_location.distance(a2.get_location()))
+                target_speed_follow_a2 = self._compute_target_speed_idm(
+                    desired_speed=target_speed,
+                    leading_actor_length=a2.bounding_box.extent.x * 2.0,
+                    ego_speed=ego_speed,
+                    leading_actor_speed=a2_speed,
+                    distance_to_leading_actor=dist_to_a2,
+                    s0=self.config.idm_leading_vehicle_minimum_distance,
+                    T=self.config.idm_leading_vehicle_time_headway,
+                )
+                if speed_reduced_by_obj is None or speed_reduced_by_obj[0] > target_speed_follow_a2:
+                    speed_reduced_by_obj = [target_speed_follow_a2, a2.type_id, a2.id, dist_to_a2]
+
+                # IDM frustration: we're being held well below desired
+                frustration = (target_speed_follow_a2 < 0.7 * target_speed)
+                CRDBG("gates", dict(route_idx=route_idx, a1slow=bool(a1_slowing), a2left=bool(a2_left_lane)))
+                # Frustration only counts after settle, and only if leader is A2 (so transient cars don't trigger)
+                # leader_is_a2 = (ego_lane_leader is not None and ego_lane_leader.id == a2.id)
+                # frustration_base = (target_speed_follow_a2 < 0.7 * target_speed)
+                # frustration = frustration_base and leader_is_a2  # <- key change
+
+                # Distance & proximity gates
+                # close_to_a2 = (dist_to_a2 <= MIN_DIST_TO_A2_BEFORE_SHIFT)
+                # CRDBG("gates", dict(route_idx=route_idx, a1slow=bool(a1_slowing), a2left=bool(a2_left_lane),
+                #                     leader_is_a2=bool(leader_is_a2), dA2=round(dist_to_a2,1)))
+
+                # Compute route segment to clear past A1
+                from_index = route_idx
+                idx_a1 = int(self._waypoint_planner.get_closest_route_index(from_index, a1.get_location()))
+                raw_from = from_index
+                raw_to   = idx_a1 + int(30.0 * ppm)
+                min_window_pts = int(10.0 * ppm)
+                to_index = max(raw_to, from_index + min_window_pts)
+                to_index = max(0, min(to_index, max_idx))
+                from_index = max(0, min(from_index, to_index - 1))
+
+                CRDBG("indices", dict(raw_from=raw_from, raw_to=raw_to, from_idx=from_index, to_idx=to_index,
+                                    max_idx=max_idx, shift_left=bool(shift_to_left_lane)))
+
+                # Check if the overtaking path is clear in the *target* lane
+                prev_road_lane_ids = get_previous_road_lane_ids(target_lane_wp)
+                overtake_speed_cap = self.config.default_overtake_speed
+                path_clear = is_overtaking_path_clear(
+                    from_index,
+                    to_index,
+                    list_vehicles,
+                    ego_location,
+                    target_speed,
+                    ego_speed,
+                    prev_road_lane_ids,
+                    min_speed=overtake_speed_cap,
+                )
+                CRDBG("clearance", dict(path_clear=bool(path_clear), prev_lane_ids=list(prev_road_lane_ids)))
+                scenario_data[SD_CHANGED]    = bool(scenario_data[SD_CHANGED]) # changed_route (bool)
+                scenario_data[SD_FROM_IDX]   = int(from_index)
+                scenario_data[SD_TO_IDX]     = int(to_index)
+                scenario_data[SD_PATH_CLEAR] = bool(path_clear)
+                scenario_data[SD_SHIFT_LEFT] = bool(shift_to_left_lane)
+
+                close_to_a2 = (horizontal_distance_a2 < dist_gate_a2)
+
+
+                # Latch the "armed tick" as soon as primary gates are true (A1 slowing OR A2 departed),
+                # but don't shift yet—this starts the settle window.
+                primary_gates = (a1_slowing or a2_left_lane)
+                if primary_gates and scenario_data[SD_ARMED_TICK] == -1:
+                    scenario_data[SD_ARMED_TICK] = int(self._tick_counter)
+                    # Optional: also push an index fence a few meters past current index
+                    if hasattr(self._waypoint_planner, "earliest_lane_change_index"):
+                        self._waypoint_planner.earliest_lane_change_index = max(
+                            getattr(self._waypoint_planner, "earliest_lane_change_index", 0),
+                            route_idx + int(INDEX_FENCE_M * ppm)
+                        )
+
+                # Are we past the settle window?
+                settled = (scenario_data[SD_ARMED_TICK] != -1) and ((int(self._tick_counter) - int(scenario_data[SD_ARMED_TICK])) >= SETTLE_TICKS)
+
+                # Final start condition:
+                # - in settle state,
+                # - leader in ego lane is A2 (or no leader at all),
+                # - close to A2,
+                # - target lane path is clear,
+                # - AND at least one semantic gate (A1 slow or A2 left) or (post-settle frustration behind A2).
+                # leader_ok = (ego_lane_leader is None) or leader_is_a2
+                # should_start_chain = primary_gates or (frustration and settled)
+
+                # CRDBG("before shift", dict(settled=bool(settled), leader_ok=bool(leader_ok),
+                #                         closea2=bool(close_to_a2), a1slow=bool(a1_slowing),
+                #                         a2left=bool(a2_left_lane), frustration=bool(frustration)))
+
+
+                should_start_chain = (a1_slowing or a2_left_lane or frustration)
+                CRDBG("before shift", dict(closea2=bool(close_to_a2), a1slow=bool(a1_slowing),
+                                        a2left=bool(a2_left_lane), frustration=bool(frustration)))
+
+
+                # if settled and leader_ok and close_to_a2 and path_clear and (not scenario_data[SD_CHANGED]) and should_start_chain:
+                if close_to_a2 and path_clear and (not scenario_data[SD_CHANGED]) and should_start_chain:
+                    # Ensure window >= transition_length + 1
+                    to_index = max(to_index, from_index + transition_length + 1)
+                    scenario_data[SD_TO_IDX] = to_index
+
+                    CRDBG("SHIFT start", dict(from_idx=from_index, to_idx=to_index,
+                                            dir="LEFT" if shift_to_left_lane else "RIGHT",
+                                            cap=round(overtake_speed_cap,1)))
+
+                    self._waypoint_planner.shift_route_smoothly(
+                        from_index,
+                        to_index,
+                        shift_to_left_lane,
+                        transition_length,
+                    )
+                    scenario_data[SD_CHANGED] = True
+                    keep_driving = True
+                    target_speed = min(target_speed, overtake_speed_cap)
+                    if hasattr(self._waypoint_planner, "draw_debug_route"):
+                        self._waypoint_planner.draw_debug_route()        # <- keep waypoints visible
+                    elif hasattr(self._waypoint_planner, "refresh_debug"):  # whichever your PRP uses
+                        self._waypoint_planner.refresh_debug()
+
+                # If we already shifted and reached the end of the shifted segment, retire the scenario
+                # --- Passing/extension/retire path ---
+                if scenario_data[SD_CHANGED]:
+                    route_idx = int(self._waypoint_planner.route_index)
+                    to_index  = int(scenario_data[SD_TO_IDX])
+
+                    # While passing: ignore A2 IDM and drop A1/A2 speed caps
+                    keep_driving = True
+                    target_speed = min(target_speed, overtake_speed_cap)
+                    if speed_reduced_by_obj is not None and len(speed_reduced_by_obj) >= 3:
+                        if speed_reduced_by_obj[2] in (a1.id, a2.id):
+                            speed_reduced_by_obj = None
+
+                    # Compute "clear of A1"
+                    ahead = ego_tf.get_forward_vector()
+                    a1_loc = a1.get_location()
+                    rel = a1_loc - ego_location
+                    dot_front = ahead.x * rel.x + ahead.y * rel.y + ahead.z * rel.z
+                    dist_a1 = ego_location.distance(a1_loc)
+                    clear_of_a1 = (dot_front < 0.0) and (dist_a1 > PASS_BUFFER_M)
+
+                    CRDBG("shifted-progress", dict(route_idx=route_idx, to_idx=to_index,
+                                                clear_of_a1=bool(clear_of_a1), dist_a1=round(dist_a1,1)))
+
+                    # Proactive extension if the end is getting too close
+                    min_gap_pts = int(transition_length + PROACTIVE_MARGIN_M * ppm)
+                    need_proactive = ((to_index - route_idx) < min_gap_pts)
+
+                    # Command-detected extension (scan further ahead)
+                    cmd_detected_merge = False
+                    cmd_view = []
+                    try:
+                        cmds = getattr(self._waypoint_planner, "commands", [])
+                        # normalize to list to avoid numpy truthiness issues
+                        if not isinstance(cmds, list):
+                            try:
+                                cmds = list(cmds)
+                            except Exception:
+                                cmds = [cmds]  # safest fallback
+
+                        lo = route_idx
+                        hi = min(route_idx + int(transition_length * 4 + 10 * ppm), len(cmds))
+                        if hi > lo:
+                            cmd_view = cmds[lo:hi]  # this is now a Python list
+                            if (self._tick_counter % 10) == 0 and len(cmd_view) > 0:
+                                CRDBG("cmd-window", dict(start=route_idx, n=len(cmd_view), sample=str(cmd_view[:5])))
+
+                            for c in cmd_view:
+                                s = str(c).lower()
+                                if ("merge" in s) or ("shift" in s and ("left" in s) != bool(scenario_data[SD_SHIFT_LEFT])):
+                                    cmd_detected_merge = True
+                                    break
+                    except Exception as e:
+                        CRDBG("cmd-scan-error", dict(err=str(e)))
+
+                    if (need_proactive or cmd_detected_merge) and not clear_of_a1:
+                        extend_by_pts = int(EXTEND_CHUNK_M * ppm)
+                        new_to = min(max_idx, max(to_index, route_idx + extend_by_pts))
+                        if new_to > to_index:
+                            # Re-validate forward clearance only if extending
+                            tgt_lane_wp = cur_wp.get_left_lane() if scenario_data[SD_SHIFT_LEFT] else cur_wp.get_right_lane()
+                            prev_lane_ids = get_previous_road_lane_ids(tgt_lane_wp) if tgt_lane_wp else set()
+                            path_clear_fwd = is_overtaking_path_clear(
+                                to_index,
+                                new_to,
+                                list_vehicles,
+                                ego_location,
+                                target_speed,
+                                ego_speed,
+                                prev_lane_ids,
+                                min_speed=overtake_speed_cap,
+                            )
+                            CRDBG("EXTEND probe", dict(prev_to=to_index, new_to=new_to,
+                                                    proactive=bool(need_proactive),
+                                                    cmd_merge=bool(cmd_detected_merge),
+                                                    allowed=bool(path_clear_fwd)))
+                            if path_clear_fwd:
+                                self._waypoint_planner.shift_route_smoothly(
+                                    max(route_idx - int(OVERLAP_BACK_M * ppm), 0),
+                                    new_to,
+                                    bool(scenario_data[SD_SHIFT_LEFT]),
+                                    transition_length,
+                                )
+                                scenario_data[SD_TO_IDX] = new_to
+                                to_index = new_to
+
+                    # --- Minimal collision guard while passing ---
+                    # Identify the nearest vehicle AHEAD in the target lane corridor
+                    tgt_wp = cur_wp.get_left_lane() if scenario_data[SD_SHIFT_LEFT] else cur_wp.get_right_lane()
+                    lead_in_pass = None
+                    lead_dist = 1e9
+                    if tgt_wp is not None:
+                        # Build a small lateral corridor in the pass lane
+                        ego_forward = ego_tf.get_forward_vector()
+                        for v in list_vehicles:
+                            if v.id in (self._vehicle.id, a1.id, a2.id):
+                                continue
+                            loc = v.get_location()
+                            rel = loc - ego_location
+                            # ahead?
+                            dot = ego_forward.x * rel.x + ego_forward.y * rel.y + ego_forward.z * rel.z
+                            if dot <= 0.0:
+                                continue
+                            # lateral distance from ego centerline (approx)
+                            lat = abs(ego_forward.cross(rel).length()) / max(1e-3, ego_forward.length())
+                            if lat > (LANE_HALF_WIDTH_M * 2.0):  # corridor ~ one lane wide (tolerant)
+                                continue
+                            # lane id match if you can (fast filter):
+                            v_wp = self.world_map.get_waypoint(loc)
+                            if v_wp and (v_wp.road_id, v_wp.lane_id) not in get_previous_road_lane_ids(tgt_wp):
+                                continue
+
+                            d = ego_location.distance(loc)
+                            if d < lead_dist:
+                                lead_dist = d
+                                lead_in_pass = v
+
+                    # If we found a leader in the pass lane, apply a light follow logic
+                    if lead_in_pass is not None:
+                        v_speed = max(0.1, lead_in_pass.get_velocity().length())
+                        # simple TTC check in ego's forward direction
+                        closing = max(0.0, ego_speed - v_speed)
+                        ttc = (lead_dist - PASS_MIN_GAP_M) / closing if closing > 0.1 else 1e9
+                        if (lead_dist < (PASS_MIN_GAP_M + 5.0)) or (ttc < PASS_TTC_S):
+                            # Soft-follow that leader to avoid collision
+                            follow_speed = self._compute_target_speed_idm(
+                                desired_speed=target_speed,
+                                leading_actor_length=lead_in_pass.bounding_box.extent.x * 2.0,
+                                ego_speed=ego_speed,
+                                leading_actor_speed=v_speed,
+                                distance_to_leading_actor=max(lead_dist, 0.1),
+                                s0=self.config.idm_leading_vehicle_minimum_distance,
+                                T=self.config.idm_leading_vehicle_time_headway,
+                            )
+                            # Clamp overtake speed by this follow cap
+                            prior = target_speed
+                            target_speed = min(target_speed, follow_speed, self.config.default_overtake_speed)
+                            if (speed_reduced_by_obj is None) or (speed_reduced_by_obj[0] > target_speed):
+                                speed_reduced_by_obj = [target_speed, lead_in_pass.type_id, lead_in_pass.id, lead_dist]
+                            CRDBG("pass-guard", dict(lead_id=int(lead_in_pass.id), dist=round(lead_dist,1),
+                                                    v_spd=round(v_speed,2), ego_spd=round(ego_speed,2),
+                                                    ttc=round(ttc,2), cap_from=round(prior,2), cap_to=round(target_speed,2)))
+
+                    # Retire when both: end reached AND safely clear of A1
+                    if (route_idx >= to_index) and clear_of_a1:
+                        CRDBG("DONE & retire scenario")
+                        CarlaDataProvider.active_scenarios = CarlaDataProvider.active_scenarios[1:]
+                        keep_driving = True
+                        target_speed = min(target_speed, overtake_speed_cap)
+                        return target_speed, keep_driving, speed_reduced_by_obj
+
+                    # While passing, short-circuit other rules
+                    return target_speed, True, speed_reduced_by_obj
+
+                # --- Not shifted yet: keep following A2 conservatively
+                CRDBG("tick", dict(route_idx=route_idx, ego_spd=round(ego_speed,2),
+                                a2_spd=round(a2_speed,2), d_a2=round(dist_to_a2,1),
+                                tgt_follow=round(target_speed_follow_a2,2),
+                                changed=bool(scenario_data[SD_CHANGED])))
+                return min(target_speed, target_speed_follow_a2), keep_driving, speed_reduced_by_obj
 
             elif scenario_type == "HazardAtSideLane":
                 (

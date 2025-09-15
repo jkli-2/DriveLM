@@ -18,8 +18,8 @@ term() {
 trap term SIGINT
 
 # carla
-export CARLA_ROOT=/home/ste/Documents/carla
-export WORK_DIR=/home/ste/Documents/DriveLM/pdm_lite
+export CARLA_ROOT=/ext/Carla
+export WORK_DIR=/ext/DriveLM/pdm_lite
 export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI
 export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI/carla
 export SCENARIO_RUNNER_ROOT=${WORK_DIR}/scenario_runner
@@ -30,7 +30,7 @@ export CARLA_SERVER=${CARLA_ROOT}/CarlaUE4.sh
 export REPETITIONS=1
 export DEBUG_CHALLENGE=1
 
-export PTH_ROUTE=${WORK_DIR}/leaderboard/data/routes_custom1
+export PTH_ROUTE=${WORK_DIR}/leaderboard/data/routes_custom2
 
 # Function to handle errors
 handle_error() {
@@ -50,8 +50,8 @@ sleep 20 # on a fast computer this can be reduced (e.g., to 6 seconds)
 
 echo 'Port' $PORT
 
-# export TEAM_AGENT=${WORK_DIR}/team_code/autopilot.py # change this to data_agent.py for data generation
-export TEAM_AGENT=${WORK_DIR}/team_code/data_agent.py # change this to data_agent.py for data generation
+export TEAM_AGENT=${WORK_DIR}/team_code/autopilot.py # change this to data_agent.py for data generation
+# export TEAM_AGENT=${WORK_DIR}/team_code/data_agent.py # change this to data_agent.py for data generation
 export CHALLENGE_TRACK_CODENAME=MAP
 export ROUTES=${PTH_ROUTE}.xml
 export TM_PORT=$((PORT + 3))
@@ -60,8 +60,8 @@ export CHECKPOINT_ENDPOINT=${PTH_ROUTE}.json
 export TEAM_CONFIG=${PTH_ROUTE}.xml
 export PTH_LOG='logs'
 export RESUME=0
-# export DATAGEN=0 # Switch this flag to 1 for data generation
-export DATAGEN=1 # Switch this flag to 1 for data generation
+export DATAGEN=0 # Switch this flag to 1 for data generation
+# export DATAGEN=1 # Switch this flag to 1 for data generation
 export SAVE_PATH='logs'
 export TM_SEED=0
 export REPETITION=0
