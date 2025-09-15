@@ -18,8 +18,8 @@ term() {
 trap term SIGINT
 
 # carla
-export CARLA_ROOT=/home/ste/Documents/carla
-export WORK_DIR=/home/ste/Documents/DriveLM/pdm_lite
+export CARLA_ROOT=/ext/Carla
+export WORK_DIR=/ext/DriveLM/pdm_lite
 export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI
 export PYTHONPATH=$PYTHONPATH:${CARLA_ROOT}/PythonAPI/carla
 export SCENARIO_RUNNER_ROOT=${WORK_DIR}/scenario_runner
@@ -47,7 +47,7 @@ sleep 10 # on a fast computer this can be reduced (e.g., to 6 seconds)
 
 echo 'Port' $PORT
 
-export SCRIPT="/home/ste/Documents/DriveLM/pdm_lite/scenario_runner/scenario_runner.py"
+export SCRIPT="/ext/DriveLM/pdm_lite/scenario_runner/scenario_runner.py"
 poetry run python ${SCRIPT} --scenario ${SCENARIO_NAME} --reloadWorld
 
 # Kill the Carla server afterwards
